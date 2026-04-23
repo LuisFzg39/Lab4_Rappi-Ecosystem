@@ -39,7 +39,7 @@ function DeliveryMarker({ position }: { position: LatLng }) {
 
   return (
     <Marker
-      ref={(r) => { markerRef.current = r as unknown as L.Marker; }}
+      ref={(r: L.Marker | null) => { markerRef.current = r; }}
       position={[position.lat, position.lng]}
       icon={deliveryIcon}
     >
