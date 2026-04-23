@@ -93,7 +93,7 @@ export function DeliveryMapPage() {
           type: 'broadcast',
           event: 'position-update',
           payload: { lat: pos.lat, lng: pos.lng },
-        }).then((r) => console.log('[Delivery] Response position-update sent:', r));
+        }).then((r: unknown) => console.log('[Delivery] Response position-update sent:', r));
       })
       .subscribe((status) => {
         console.log('[Delivery] Channel subscription status:', status);
@@ -132,7 +132,7 @@ export function DeliveryMapPage() {
       type: 'broadcast',
       event: 'order-accepted',
       payload: order,
-    }).then((r) => console.log('[Delivery] order-accepted broadcast (global):', r));
+    }).then((r: unknown) => console.log('[Delivery] order-accepted broadcast (global):', r));
   }, [order]);
 
   const sendPositionUpdate = useCallback(async (pos: LatLng) => {

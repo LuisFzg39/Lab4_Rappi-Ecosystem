@@ -113,7 +113,7 @@ export function OrderTrackingPage() {
               type: 'broadcast',
               event: 'request-position',
               payload: { orderId: id, timestamp: Date.now() },
-            }).then((r) => console.log('[Consumer] request-position sent:', r));
+            }).then((r: unknown) => console.log('[Consumer] request-position sent:', r));
           }, 300);
         }
       });
