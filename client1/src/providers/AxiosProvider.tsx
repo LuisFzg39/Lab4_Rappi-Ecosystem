@@ -9,7 +9,9 @@ const AxiosContext = createContext<AxiosInstance | null>(null);
 
 export function AxiosProvider({ children }: { children: ComponentChildren }) {
   const instance = useMemo(() => {
-    const inst = axios.create();
+    const inst = axios.create({
+      baseURL: import.meta.env.VITE_API_URL || '',
+    });
 
     inst.interceptors.request.use((config) => {
       const token = getStoredAuth()?.token;
