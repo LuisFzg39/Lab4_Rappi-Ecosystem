@@ -36,3 +36,5 @@ app.use('/api/auth', authRouter);
 app.use('/api/orders', orderRouter);
 
 app.use(errorsMiddleware);
+
+export default app;

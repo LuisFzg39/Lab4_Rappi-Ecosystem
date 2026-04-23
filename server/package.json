@@ -7,7 +7,7 @@
     "test": "vitest run",
     "dev": "nodemon ./src/start.ts",
     "build": "tsc",
-    "start": "node ./dist/app.js"
+    "start": "node ./dist/start.js"
   },
   "keywords": [],
   "author": "",
