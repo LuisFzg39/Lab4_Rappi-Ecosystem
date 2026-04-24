@@ -10,11 +10,15 @@ import {
 const buildOrderWithItems = async (orderId: string): Promise<OrderWithItems> => {
   const { data: order, error: oErr } = await supabase
     .from('orders')
-    .select('id, consumer_id, store_id, delivery_id, status, created_at, destination_lat, destination_lng, delivery_lat, delivery_lng')
+    .select('id, consumer_id, store_id, delivery_id, status, created_at')
     .eq('id', orderId)
     .single();
 
   if (oErr || !order) throw Boom.notFound('Order not found');
+
+  // Obtener coordenadas geográficas vía PostGIS RPC
+  const { data: geo } = await supabase.rpc('get_order_geo', { p_order_id: orderId });
+  const geoData = geo && geo.length > 0 ? geo[0] : null;
 
   const { data: store } = await supabase
     .from('stores')
@@ -37,6 +41,10 @@ const buildOrderWithItems = async (orderId: string): Promise<OrderWithItems> => 
 
   return {
     ...order,
+    destination_lat: geoData?.destination_lat ?? undefined,
+    destination_lng: geoData?.destination_lng ?? undefined,
+    delivery_lat: geoData?.delivery_lat ?? undefined,
+    delivery_lng: geoData?.delivery_lng ?? undefined,
     store_name: store?.name,
     consumer_name: consumer?.name,
     items: (items || []).map((i: Record<string, unknown>) => ({
@@ -88,17 +96,16 @@ export const createOrderService = async (
   if (!store) throw Boom.notFound('Store not found');
   if (!store.is_open) throw Boom.badRequest('Store is currently closed');
 
-  const { data: order, error: oErr } = await supabase
-    .from('orders')
-    .insert({
-      consumer_id: dto.consumer_id,
-      store_id: dto.store_id,
-      status: OrderStatus.CREATED,
-      destination_lat: dto.destination_lat,
-      destination_lng: dto.destination_lng,
-    })
-    .select('id')
-    .single();
+  // Insertar pedido con destino geográfico vía PostGIS RPC
+  const { data: newOrderId, error: oErr } = await supabase.rpc('insert_order_with_geo', {
+    p_consumer_id: dto.consumer_id,
+    p_store_id: dto.store_id,
+    p_status: OrderStatus.CREATED,
+    p_destination_lng: dto.destination_lng,
+    p_destination_lat: dto.destination_lat,
+  });
+
+  const order = { id: newOrderId };
 
   if (oErr) throw Boom.internal(oErr.message);
 
@@ -209,23 +216,28 @@ export const updateDeliveryPositionService = async (
     throw Boom.badRequest('Order is not in delivery');
   }
 
-  const { error } = await supabase
-    .from('orders')
-    .update({
-      delivery_lat: position.lat,
-      delivery_lng: position.lng,
-    })
-    .eq('id', orderId);
+  // Actualizar posición del repartidor vía PostGIS RPC
+  const { error } = await supabase.rpc('update_delivery_position', {
+    p_order_id: orderId,
+    p_lng: position.lng,
+    p_lat: position.lat,
+  });
 
   if (error) throw Boom.internal(error.message);
 
-  const destLat = order.destination_lat!;
-  const destLng = order.destination_lng!;
-  const distance = haversineDistance(position.lat, position.lng, destLat, destLng);
+  // Verificar llegada usando ST_DWithin de PostGIS (< 5 metros)
+  const { data: arrival, error: arrErr } = await supabase.rpc('check_delivery_arrival', {
+    p_order_id: orderId,
+  });
+
+  if (arrErr) throw Boom.internal(arrErr.message);
+
+  const arrivalData = arrival && arrival.length > 0 ? arrival[0] : null;
+  const distance = arrivalData?.distance_meters ?? Infinity;
 
   console.log(`[Server] Position update for order ${orderId}: (${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}) - distance to dest: ${distance.toFixed(1)}m`);
 
-  if (distance <= 5) {
+  if (arrivalData?.is_arrived) {
     const { error: statusErr } = await supabase
       .from('orders')
       .update({ status: OrderStatus.DELIVERED })
@@ -264,17 +276,3 @@ export const updateOrderStatusService = async (
 
   return buildOrderWithItems(orderId);
 };
-
-function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
