@@ -9,7 +9,7 @@ import type { Order, LatLng } from '../../types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import 'leaflet/dist/leaflet.css';
 
-const STEP = 0.00005;
+const STEP = 0.00003;
 
 const destinationIcon = new L.Icon({
   iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
@@ -42,6 +42,7 @@ export function DeliveryMapPage() {
   const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const globalChannelRef = useRef<RealtimeChannel | null>(null);
+  const globalReadyRef = useRef(false);
   const deliveredRef = useRef(false);
   const acceptedBroadcastSent = useRef(false);
 
@@ -78,6 +79,7 @@ export function DeliveryMapPage() {
       .finally(() => setLoading(false));
   }, [axios, id]);
 
+  // Order-scoped channel: only send after SUBSCRIBED to avoid REST fallback
   useEffect(() => {
     if (!id) return;
 
@@ -91,11 +93,18 @@ export function DeliveryMapPage() {
           type: 'broadcast',
           event: 'position-update',
           payload: { lat: pos.lat, lng: pos.lng },
-        }).then((r: unknown) => console.log('[Delivery] Response position-update sent:', r));
+        });
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           setChannelReady(true);
+          // Announce our current position so any listening consumer sees us immediately
+          const pos = positionRef.current;
+          channel.send({
+            type: 'broadcast',
+            event: 'position-update',
+            payload: { lat: pos.lat, lng: pos.lng },
+          });
         }
       });
 
@@ -106,34 +115,55 @@ export function DeliveryMapPage() {
     };
   }, [id, supabase]);
 
+  // Global channel for cross-page events
   useEffect(() => {
     const channel = supabase.channel('orders:global');
     globalChannelRef.current = channel;
-    channel.subscribe();
+
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        globalReadyRef.current = true;
+      } else {
+        globalReadyRef.current = false;
+      }
+    });
 
     return () => {
       supabase.removeChannel(channel);
       globalChannelRef.current = null;
+      globalReadyRef.current = false;
     };
   }, [supabase]);
 
+  // Announce "order-accepted" once, after both the order is loaded and the global channel is ready
   useEffect(() => {
     if (!order || acceptedBroadcastSent.current) return;
     if (order.status !== 'En entrega') return;
-    if (!globalChannelRef.current) return;
 
-    acceptedBroadcastSent.current = true;
-    globalChannelRef.current.send({
-      type: 'broadcast',
-      event: 'order-accepted',
-      payload: order,
-    }).then((r: unknown) => console.log('[Delivery] order-accepted broadcast (global):', r));
+    let cancelled = false;
+    const interval = setInterval(() => {
+      if (cancelled) return;
+      if (!globalReadyRef.current || !globalChannelRef.current) return;
+
+      acceptedBroadcastSent.current = true;
+      globalChannelRef.current.send({
+        type: 'broadcast',
+        event: 'order-accepted',
+        payload: order,
+      });
+      clearInterval(interval);
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [order]);
 
   const sendPositionUpdate = useCallback(async (pos: LatLng) => {
     try {
       const ch = channelRef.current;
-      if (ch) {
+      if (ch && channelReady) {
         await ch.send({
           type: 'broadcast',
           event: 'position-update',
@@ -152,7 +182,7 @@ export function DeliveryMapPage() {
         setOrder(data);
         showToast('Order delivered! You arrived at the destination.', 'success');
 
-        if (globalChannelRef.current) {
+        if (globalChannelRef.current && globalReadyRef.current) {
           await globalChannelRef.current.send({
             type: 'broadcast',
             event: 'order-delivered',
@@ -163,7 +193,7 @@ export function DeliveryMapPage() {
     } catch (err) {
       console.error('[Delivery] Error sending position:', err);
     }
-  }, [axios, id, showToast]);
+  }, [axios, id, showToast, channelReady]);
 
   useEffect(() => {
     if (!order || order.status !== 'En entrega') return;
@@ -191,7 +221,7 @@ export function DeliveryMapPage() {
         throttleRef.current = setTimeout(() => {
           sendPositionUpdate(positionRef.current);
           throttleRef.current = null;
-        }, 1000);
+        }, 700);
       }
     };
 

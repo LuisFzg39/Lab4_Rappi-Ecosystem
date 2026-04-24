@@ -71,6 +71,18 @@ export function OrderTrackingPage() {
   const [channelStatus, setChannelStatus] = useState('connecting');
   const [initialCenter, setInitialCenter] = useState<[number, number] | null>(null);
 
+  const applyOrder = (data: Order) => {
+    setOrder((prev) => {
+      if (prev?.status !== 'Entregado' && data.status === 'Entregado') {
+        showToast('Your order has been delivered!', 'success');
+      }
+      return data;
+    });
+    if (data.delivery_lat && data.delivery_lng) {
+      setDeliveryPos({ lat: data.delivery_lat, lng: data.delivery_lng });
+    }
+  };
+
   useEffect(() => {
     axios.get<Order>(`/api/orders/${id}`)
       .then(({ data }) => {
@@ -104,13 +116,11 @@ export function OrderTrackingPage() {
         setChannelStatus(status === 'SUBSCRIBED' ? 'connected' : status === 'CLOSED' ? 'disconnected' : 'connecting');
 
         if (status === 'SUBSCRIBED') {
-          setTimeout(() => {
-            trackingChannel.send({
-              type: 'broadcast',
-              event: 'request-position',
-              payload: { orderId: id, timestamp: Date.now() },
-            }).then((r: unknown) => console.log('[Consumer] request-position sent:', r));
-          }, 300);
+          trackingChannel.send({
+            type: 'broadcast',
+            event: 'request-position',
+            payload: { orderId: id, timestamp: Date.now() },
+          });
         }
       });
 
@@ -125,8 +135,7 @@ export function OrderTrackingPage() {
       .on('broadcast', { event: 'order-delivered' }, (message) => {
         const p = message.payload as Order;
         if (!p || p.id !== id) return;
-        setOrder(p);
-        showToast('Your order has been delivered!', 'success');
+        applyOrder(p);
       })
       .subscribe();
 
@@ -135,6 +144,21 @@ export function OrderTrackingPage() {
       supabase.removeChannel(globalChannel);
     };
   }, [id, supabase]);
+
+  // Polling fallback: while the order is in delivery, re-fetch every 3s so the consumer
+  // always sees the driver's position and the "Entregado" transition, even if broadcasts fail.
+  useEffect(() => {
+    if (!id || !order) return;
+    if (order.status === 'Entregado') return;
+
+    const interval = setInterval(() => {
+      axios.get<Order>(`/api/orders/${id}`)
+        .then(({ data }) => applyOrder(data))
+        .catch(() => { /* ignore transient errors */ });
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [axios, id, order?.status]);
 
   if (loading || !initialCenter) {
     return (

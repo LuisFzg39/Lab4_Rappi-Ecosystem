@@ -225,7 +225,8 @@ export const updateDeliveryPositionService = async (
 
   if (error) throw Boom.internal(error.message);
 
-  // Verificar llegada usando ST_DWithin de PostGIS (< 5 metros)
+  // Verificar llegada usando ST_Distance de PostGIS
+  const ARRIVAL_THRESHOLD_METERS = 15;
   const { data: arrival, error: arrErr } = await supabase.rpc('check_delivery_arrival', {
     p_order_id: orderId,
   });
@@ -234,10 +235,11 @@ export const updateDeliveryPositionService = async (
 
   const arrivalData = arrival && arrival.length > 0 ? arrival[0] : null;
   const distance = arrivalData?.distance_meters ?? Infinity;
+  const isArrived = distance <= ARRIVAL_THRESHOLD_METERS;
 
   console.log(`[Server] Position update for order ${orderId}: (${position.lat.toFixed(5)}, ${position.lng.toFixed(5)}) - distance to dest: ${distance.toFixed(1)}m`);
 
-  if (arrivalData?.is_arrived) {
+  if (isArrived) {
     const { error: statusErr } = await supabase
       .from('orders')
       .update({ status: OrderStatus.DELIVERED })
