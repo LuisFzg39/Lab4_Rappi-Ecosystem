@@ -16,9 +16,16 @@ export function MyDeliveriesPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    axios.get<Order[]>('/api/orders/delivering')
-      .then(({ data }) => setOrders(data))
-      .finally(() => setLoading(false));
+    const fetchOrders = () => {
+      axios.get<Order[]>('/api/orders/delivering')
+        .then(({ data }) => setOrders(data))
+        .catch(() => { /* ignore transient errors */ })
+        .finally(() => setLoading(false));
+    };
+
+    fetchOrders();
+    const interval = setInterval(fetchOrders, 3000);
+    return () => clearInterval(interval);
   }, [axios]);
 
   return (

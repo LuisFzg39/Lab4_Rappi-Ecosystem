@@ -18,10 +18,17 @@ export function AvailableOrdersPage() {
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
 
   useEffect(() => {
-    setLoading(true);
-    axios.get<Order[]>('/api/orders/available')
-      .then(({ data }) => setOrders(data))
-      .finally(() => setLoading(false));
+    const fetchOrders = (showSpinner = false) => {
+      if (showSpinner) setLoading(true);
+      axios.get<Order[]>('/api/orders/available')
+        .then(({ data }) => setOrders(data))
+        .catch(() => { /* ignore transient errors */ })
+        .finally(() => setLoading(false));
+    };
+
+    fetchOrders(true);
+    const interval = setInterval(() => fetchOrders(false), 3000);
+    return () => clearInterval(interval);
   }, [axios]);
 
   useEffect(() => {

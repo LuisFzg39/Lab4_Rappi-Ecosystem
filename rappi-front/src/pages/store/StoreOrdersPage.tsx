@@ -22,14 +22,21 @@ export function StoreOrdersPage() {
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
 
   useEffect(() => {
-    axios.get<Order[]>('/api/orders/store')
-      .then(({ data }) => {
-        setOrders(data);
-        if (data.length > 0) {
-          setStoreId(data[0].store_id);
-        }
-      })
-      .finally(() => setLoading(false));
+    const fetchOrders = () => {
+      axios.get<Order[]>('/api/orders/store')
+        .then(({ data }) => {
+          setOrders(data);
+          if (data.length > 0) {
+            setStoreId(data[0].store_id);
+          }
+        })
+        .catch(() => { /* ignore transient errors */ })
+        .finally(() => setLoading(false));
+    };
+
+    fetchOrders();
+    const interval = setInterval(fetchOrders, 3000);
+    return () => clearInterval(interval);
   }, [axios]);
 
   useEffect(() => {

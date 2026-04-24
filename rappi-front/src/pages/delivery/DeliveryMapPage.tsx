@@ -45,6 +45,7 @@ export function DeliveryMapPage() {
   const globalReadyRef = useRef(false);
   const deliveredRef = useRef(false);
   const acceptedBroadcastSent = useRef(false);
+  const initialPositionPublishedRef = useRef(false);
 
   useEffect(() => {
     positionRef.current = position;
@@ -58,21 +59,43 @@ export function DeliveryMapPage() {
     axios.get<Order>(`/api/orders/${id}`)
       .then(({ data }) => {
         setOrder(data);
+
+        let startPos: LatLng | null = null;
+        let needsPublish = false;
+
         if (data.delivery_lat && data.delivery_lng) {
-          const p = { lat: data.delivery_lat, lng: data.delivery_lng };
-          setPosition(p);
-          positionRef.current = p;
+          startPos = { lat: data.delivery_lat, lng: data.delivery_lng };
         } else if (data.destination_lat && data.destination_lng) {
-          const startPos = {
+          startPos = {
             lat: data.destination_lat + 0.002,
             lng: data.destination_lng + 0.002,
           };
+          needsPublish = true;
+        }
+
+        if (startPos) {
           setPosition(startPos);
           positionRef.current = startPos;
         }
+
         if (data.status === 'Entregado') {
           setDelivered(true);
           deliveredRef.current = true;
+        }
+
+        // Persist starting position right away so the consumer sees the driver's
+        // pin even before the first arrow key press.
+        if (
+          needsPublish &&
+          startPos &&
+          data.status === 'En entrega' &&
+          !initialPositionPublishedRef.current
+        ) {
+          initialPositionPublishedRef.current = true;
+          axios.patch(`/api/orders/${id}/position`, {
+            lat: startPos.lat,
+            lng: startPos.lng,
+          }).catch(() => { /* non-blocking */ });
         }
       })
       .catch(() => showToast('Error loading order', 'error'))
