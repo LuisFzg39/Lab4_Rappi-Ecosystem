@@ -2,6 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { Link } from 'react-router-dom';
 import { useAxios } from '../../providers/AxiosProvider';
 import { useUser } from '../../providers/UserProvider';
+import useSupabase from '../../hooks/useSupabase';
 import type { Order } from '../../types';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -11,22 +12,51 @@ const STATUS_COLORS: Record<string, string> = {
 
 export function MyDeliveriesPage() {
   const axios = useAxios();
-  const { setAuth } = useUser();
+  const { auth, setAuth } = useUser();
+  const supabase = useSupabase();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
+  const [liveStatus, setLiveStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
 
   useEffect(() => {
-    const fetchOrders = () => {
-      axios.get<Order[]>('/api/orders/delivering')
-        .then(({ data }) => setOrders(data))
-        .catch(() => { /* ignore transient errors */ })
-        .finally(() => setLoading(false));
-    };
-
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 3000);
-    return () => clearInterval(interval);
+    axios.get<Order[]>('/api/orders/delivering')
+      .then(({ data }) => setOrders(data))
+      .catch(() => { /* ignore transient errors */ })
+      .finally(() => setLoading(false));
   }, [axios]);
+
+  useEffect(() => {
+    if (!auth) return;
+    const deliveryId = auth.user.id;
+
+    const channel = supabase.channel('orders:global');
+    channel
+      .on('broadcast', { event: 'order-accepted' }, (message) => {
+        console.log('[Realtime] order-accepted received', message.payload);
+        const p = message.payload as Order;
+        if (!p || p.delivery_id !== deliveryId) return;
+        setOrders((prev) => {
+          if (prev.some((o) => o.id === p.id)) {
+            return prev.map((ord) => (ord.id === p.id ? p : ord));
+          }
+          return [p, ...prev];
+        });
+      })
+      .on('broadcast', { event: 'order-delivered' }, (message) => {
+        console.log('[Realtime] order-delivered received', message.payload);
+        const p = message.payload as Order;
+        if (!p || p.delivery_id !== deliveryId) return;
+        setOrders((prev) => prev.map((ord) => (ord.id === p.id ? p : ord)));
+      })
+      .subscribe((status) => {
+        console.log('[Realtime] orders:global (MyDeliveriesPage) status:', status);
+        setLiveStatus(status === 'SUBSCRIBED' ? 'live' : status === 'CLOSED' ? 'offline' : 'connecting');
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [auth, supabase]);
 
   return (
     <div class="min-h-screen bg-gray-50">
@@ -37,9 +67,14 @@ export function MyDeliveriesPage() {
           </Link>
           <h1 class="text-xl font-semibold text-gray-800">My Deliveries</h1>
         </div>
-        <button onClick={() => setAuth(null)} class="text-sm text-red-500 hover:underline">
-          Logout
-        </button>
+        <div class="flex items-center gap-3">
+          <span class={`text-xs px-2 py-1 rounded-full ${liveStatus === 'live' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+            {liveStatus === 'live' ? 'Live' : 'Connecting...'}
+          </span>
+          <button onClick={() => setAuth(null)} class="text-sm text-red-500 hover:underline">
+            Logout
+          </button>
+        </div>
       </header>
 
       <main class="max-w-4xl mx-auto px-6 py-8">

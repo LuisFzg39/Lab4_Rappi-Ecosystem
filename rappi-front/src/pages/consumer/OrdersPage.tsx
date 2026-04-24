@@ -21,22 +21,17 @@ export function OrdersPage() {
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
 
   useEffect(() => {
-    const fetchOrders = () => {
-      axios.get<Order[]>('/api/orders/mine')
-        .then(({ data }) => setOrders(data))
-        .catch(() => { /* ignore transient errors */ })
-        .finally(() => setLoading(false));
-    };
-
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 3000);
-    return () => clearInterval(interval);
+    axios.get<Order[]>('/api/orders/mine')
+      .then(({ data }) => setOrders(data))
+      .catch(() => { /* ignore transient errors */ })
+      .finally(() => setLoading(false));
   }, [axios]);
 
   useEffect(() => {
     const channel = supabase.channel('orders:global');
     channel
       .on('broadcast', { event: 'order-taken' }, (message) => {
+        console.log('[Realtime] order-taken received', message.payload);
         const payload = message.payload as { orderId: string };
         setOrders((prev) => prev.map((o) => (
           o.id === payload.orderId && o.status === 'Creado'
@@ -45,14 +40,17 @@ export function OrdersPage() {
         )));
       })
       .on('broadcast', { event: 'order-accepted' }, (message) => {
+        console.log('[Realtime] order-accepted received', message.payload);
         const p = message.payload as Order;
         setOrders((prev) => prev.map((ord) => (ord.id === p.id ? p : ord)));
       })
       .on('broadcast', { event: 'order-delivered' }, (message) => {
+        console.log('[Realtime] order-delivered received', message.payload);
         const p = message.payload as Order;
         setOrders((prev) => prev.map((ord) => (ord.id === p.id ? p : ord)));
       })
       .subscribe((status) => {
+        console.log('[Realtime] orders:global (OrdersPage) status:', status);
         setLiveStatus(status === 'SUBSCRIBED' ? 'live' : status === 'CLOSED' ? 'offline' : 'connecting');
       });
 

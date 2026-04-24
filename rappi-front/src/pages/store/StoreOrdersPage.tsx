@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { useNavigate } from 'react-router-dom';
 import { useAxios } from '../../providers/AxiosProvider';
 import { useUser } from '../../providers/UserProvider';
@@ -19,62 +19,41 @@ export function StoreOrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [storeId, setStoreId] = useState<string | null>(null);
+  const storeIdRef = useRef<string | null>(null);
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
 
   useEffect(() => {
-    const fetchOrders = () => {
-      axios.get<Order[]>('/api/orders/store')
-        .then(({ data }) => {
-          setOrders(data);
-          if (data.length > 0) {
-            setStoreId(data[0].store_id);
-          }
-        })
-        .catch(() => { /* ignore transient errors */ })
-        .finally(() => setLoading(false));
-    };
+    storeIdRef.current = storeId;
+  }, [storeId]);
 
-    fetchOrders();
-    const interval = setInterval(fetchOrders, 3000);
-    return () => clearInterval(interval);
+  useEffect(() => {
+    axios.get<Order[]>('/api/orders/store')
+      .then(({ data }) => {
+        setOrders(data);
+        if (data.length > 0) {
+          setStoreId(data[0].store_id);
+        }
+      })
+      .catch(() => { /* ignore transient errors */ })
+      .finally(() => setLoading(false));
   }, [axios]);
 
   useEffect(() => {
-    if (storeId) return;
     const channel = supabase.channel('orders:global');
     channel
       .on('broadcast', { event: 'order-created' }, (message) => {
+        console.log('[Realtime] order-created received', message.payload);
         const newOrder = message.payload as Order;
-        axios.get<Order[]>('/api/orders/store').then(({ data }) => {
-          if (data.some((o) => o.id === newOrder.id)) {
-            setOrders(data);
-            setStoreId(newOrder.store_id);
-          }
-        });
-      })
-      .subscribe((status) => {
-        setLiveStatus(status === 'SUBSCRIBED' ? 'live' : status === 'CLOSED' ? 'offline' : 'connecting');
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [storeId, supabase, axios]);
-
-  useEffect(() => {
-    if (!storeId) return;
-
-    const channel = supabase.channel('orders:global');
-    channel
-      .on('broadcast', { event: 'order-created' }, (message) => {
-        const newOrder = message.payload as Order;
-        if (newOrder.store_id !== storeId) return;
+        const currentStoreId = storeIdRef.current;
+        if (currentStoreId && newOrder.store_id !== currentStoreId) return;
         setOrders((prev) => {
           if (prev.some((o) => o.id === newOrder.id)) return prev;
           return [newOrder, ...prev];
         });
+        if (!currentStoreId) setStoreId(newOrder.store_id);
       })
       .on('broadcast', { event: 'order-taken' }, (message) => {
+        console.log('[Realtime] order-taken received', message.payload);
         const payload = message.payload as { orderId: string };
         setOrders((prev) => prev.map((o) => (
           o.id === payload.orderId && o.status === 'Creado'
@@ -83,23 +62,28 @@ export function StoreOrdersPage() {
         )));
       })
       .on('broadcast', { event: 'order-accepted' }, (message) => {
+        console.log('[Realtime] order-accepted received', message.payload);
         const p = message.payload as Order;
-        if (!p || p.store_id !== storeId) return;
+        const currentStoreId = storeIdRef.current;
+        if (!p || (currentStoreId && p.store_id !== currentStoreId)) return;
         setOrders((prev) => prev.map((ord) => (ord.id === p.id ? p : ord)));
       })
       .on('broadcast', { event: 'order-delivered' }, (message) => {
+        console.log('[Realtime] order-delivered received', message.payload);
         const p = message.payload as Order;
-        if (!p || p.store_id !== storeId) return;
+        const currentStoreId = storeIdRef.current;
+        if (!p || (currentStoreId && p.store_id !== currentStoreId)) return;
         setOrders((prev) => prev.map((ord) => (ord.id === p.id ? p : ord)));
       })
       .subscribe((status) => {
+        console.log('[Realtime] orders:global (StoreOrdersPage) status:', status);
         setLiveStatus(status === 'SUBSCRIBED' ? 'live' : status === 'CLOSED' ? 'offline' : 'connecting');
       });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [storeId, supabase]);
+  }, [supabase]);
 
   return (
     <div class="min-h-screen bg-gray-50">

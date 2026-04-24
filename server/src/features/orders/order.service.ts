@@ -1,11 +1,39 @@
 import Boom from '@hapi/boom';
 import { supabase } from '../../config/database';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../../config';
 import {
   CreateOrderDTO,
   OrderStatus,
   OrderWithItems,
   UpdatePositionDTO,
 } from './order.types';
+
+const BROADCAST_URL = `${SUPABASE_URL}/realtime/v1/api/broadcast`;
+
+const broadcast = async (topic: string, event: string, payload: unknown): Promise<void> => {
+  try {
+    const res = await fetch(BROADCAST_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      },
+      body: JSON.stringify({
+        messages: [{ topic, event, payload, private: false }],
+      }),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`[Realtime] Broadcast failed (${res.status}) on ${topic}/${event}: ${text}`);
+    } else {
+      console.log(`[Realtime] Broadcast sent on ${topic}/${event}`);
+    }
+  } catch (error) {
+    console.error(`[Realtime] Broadcast error on ${topic}/${event}:`, error);
+  }
+};
 
 const buildOrderWithItems = async (orderId: string): Promise<OrderWithItems> => {
   const { data: order, error: oErr } = await supabase
@@ -131,7 +159,9 @@ export const createOrderService = async (
     if (iiErr) throw Boom.internal(iiErr.message);
   }
 
-  return buildOrderWithItems(order.id);
+  const createdOrder = await buildOrderWithItems(order.id);
+  broadcast('orders:global', 'order-created', createdOrder);
+  return createdOrder;
 };
 
 export const getOrderByIdService = async (orderId: string): Promise<OrderWithItems> => {
@@ -198,6 +228,10 @@ export const acceptOrderService = async (
 
   const updatedOrder = await buildOrderWithItems(orderId);
   console.log(`[Server] Order ${orderId} accepted by ${deliveryId}, status: ${updatedOrder.status}`);
+
+  broadcast('orders:global', 'order-taken', { orderId });
+  broadcast('orders:global', 'order-accepted', updatedOrder);
+
   return updatedOrder;
 };
 
@@ -225,6 +259,8 @@ export const updateDeliveryPositionService = async (
 
   if (error) throw Boom.internal(error.message);
 
+  broadcast(`order:${orderId}`, 'position-update', { lat: position.lat, lng: position.lng });
+
   // Verificar llegada usando ST_Distance de PostGIS
   const ARRIVAL_THRESHOLD_METERS = 15;
   const { data: arrival, error: arrErr } = await supabase.rpc('check_delivery_arrival', {
@@ -248,7 +284,10 @@ export const updateDeliveryPositionService = async (
     if (statusErr) throw Boom.internal(statusErr.message);
 
     console.log(`[Server] Order ${orderId} marked as DELIVERED (distance: ${distance.toFixed(1)}m)`);
-    return buildOrderWithItems(orderId);
+
+    const deliveredOrder = await buildOrderWithItems(orderId);
+    broadcast('orders:global', 'order-delivered', deliveredOrder);
+    return deliveredOrder;
   }
 
   return buildOrderWithItems(orderId);
@@ -276,5 +315,10 @@ export const updateOrderStatusService = async (
 
   if (error) throw Boom.internal(error.message);
 
-  return buildOrderWithItems(orderId);
+  const updatedOrder = await buildOrderWithItems(orderId);
+  if (status === OrderStatus.DELIVERED) {
+    broadcast('orders:global', 'order-delivered', updatedOrder);
+  }
+
+  return updatedOrder;
 };

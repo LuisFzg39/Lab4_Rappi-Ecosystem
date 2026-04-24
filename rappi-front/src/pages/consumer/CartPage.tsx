@@ -1,20 +1,12 @@
 import { useState } from 'preact/hooks';
 import { useNavigate, Link } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
-import L from 'leaflet';
 import { useAxios } from '../../providers/AxiosProvider';
 import { useToast } from '../../providers/ToastProvider';
 import { useCart } from '../../providers/CartProvider';
-import useSupabase from '../../hooks/useSupabase';
+import { destinationIcon } from '../../utils/mapIcons';
 import type { LatLng, Order } from '../../types';
 import 'leaflet/dist/leaflet.css';
-
-const destinationIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
 
 function MapClickHandler({ onSelect }: { onSelect: (pos: LatLng) => void }) {
   useMapEvents({
@@ -30,7 +22,6 @@ export function CartPage() {
   const axios = useAxios();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const supabase = useSupabase();
   const [loading, setLoading] = useState(false);
   const [destination, setDestination] = useState<LatLng | null>(null);
 
@@ -51,9 +42,8 @@ export function CartPage() {
 
     setLoading(true);
     try {
-      const createdOrders: Order[] = [];
       for (const [storeId, group] of Object.entries(groupedByStore)) {
-        const { data } = await axios.post<Order>('/api/orders', {
+        await axios.post<Order>('/api/orders', {
           store_id: storeId,
           items: group.items.map((i) => ({
             product_id: i.product.id,
@@ -62,23 +52,7 @@ export function CartPage() {
           destination_lat: destination.lat,
           destination_lng: destination.lng,
         });
-        createdOrders.push(data);
       }
-
-      const globalChannel = supabase.channel('orders:global');
-      globalChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          for (const order of createdOrders) {
-            await globalChannel.send({
-              type: 'broadcast',
-              event: 'order-created',
-              payload: order,
-            });
-            console.log('[Consumer] Broadcast order-created for', order.id);
-          }
-          supabase.removeChannel(globalChannel);
-        }
-      });
 
       clearCart();
       showToast('Order placed successfully!', 'success');

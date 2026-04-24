@@ -1,26 +1,13 @@
 import { useEffect, useState, useRef } from 'preact/hooks';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
-import L from 'leaflet';
+import type L from 'leaflet';
 import { useAxios } from '../../providers/AxiosProvider';
 import { useToast } from '../../providers/ToastProvider';
 import useSupabase from '../../hooks/useSupabase';
+import { destinationIcon, deliveryIcon } from '../../utils/mapIcons';
 import type { Order, LatLng } from '../../types';
 import 'leaflet/dist/leaflet.css';
-
-const destinationIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-
-const deliveryIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
 
 const STATUS_COLORS: Record<string, string> = {
   Creado: 'bg-yellow-100 text-yellow-700',
@@ -104,61 +91,43 @@ export function OrderTrackingPage() {
     if (!id) return;
 
     const trackingChannel = supabase.channel(`order:${id}`);
-
     trackingChannel
       .on('broadcast', { event: 'position-update' }, (message) => {
+        console.log('[Realtime] position-update received', message.payload);
         const p = message.payload as { lat: number; lng: number };
         if (p && typeof p.lat === 'number' && typeof p.lng === 'number') {
           setDeliveryPos({ lat: p.lat, lng: p.lng });
         }
       })
       .subscribe((status) => {
+        console.log(`[Realtime] order:${id} status:`, status);
         setChannelStatus(status === 'SUBSCRIBED' ? 'connected' : status === 'CLOSED' ? 'disconnected' : 'connecting');
-
-        if (status === 'SUBSCRIBED') {
-          trackingChannel.send({
-            type: 'broadcast',
-            event: 'request-position',
-            payload: { orderId: id, timestamp: Date.now() },
-          });
-        }
       });
 
     const globalChannel = supabase.channel('orders:global');
     globalChannel
       .on('broadcast', { event: 'order-accepted' }, (message) => {
+        console.log('[Realtime] order-accepted received', message.payload);
         const p = message.payload as Order;
         if (!p || p.id !== id) return;
         setOrder(p);
         showToast('A delivery driver accepted your order!', 'success');
       })
       .on('broadcast', { event: 'order-delivered' }, (message) => {
+        console.log('[Realtime] order-delivered received', message.payload);
         const p = message.payload as Order;
         if (!p || p.id !== id) return;
         applyOrder(p);
       })
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[Realtime] orders:global status:', status);
+      });
 
     return () => {
       supabase.removeChannel(trackingChannel);
       supabase.removeChannel(globalChannel);
     };
   }, [id, supabase]);
-
-  // Polling fallback: while the order is in delivery, re-fetch every 3s so the consumer
-  // always sees the driver's position and the "Entregado" transition, even if broadcasts fail.
-  useEffect(() => {
-    if (!id || !order) return;
-    if (order.status === 'Entregado') return;
-
-    const interval = setInterval(() => {
-      axios.get<Order>(`/api/orders/${id}`)
-        .then(({ data }) => applyOrder(data))
-        .catch(() => { /* ignore transient errors */ });
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [axios, id, order?.status]);
 
   if (loading || !initialCenter) {
     return (

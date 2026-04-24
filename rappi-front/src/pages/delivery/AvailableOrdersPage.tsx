@@ -18,17 +18,10 @@ export function AvailableOrdersPage() {
   const [liveStatus, setLiveStatus] = useState<'connecting' | 'live' | 'offline'>('connecting');
 
   useEffect(() => {
-    const fetchOrders = (showSpinner = false) => {
-      if (showSpinner) setLoading(true);
-      axios.get<Order[]>('/api/orders/available')
-        .then(({ data }) => setOrders(data))
-        .catch(() => { /* ignore transient errors */ })
-        .finally(() => setLoading(false));
-    };
-
-    fetchOrders(true);
-    const interval = setInterval(() => fetchOrders(false), 3000);
-    return () => clearInterval(interval);
+    axios.get<Order[]>('/api/orders/available')
+      .then(({ data }) => setOrders(data))
+      .catch(() => { /* ignore transient errors */ })
+      .finally(() => setLoading(false));
   }, [axios]);
 
   useEffect(() => {
@@ -36,6 +29,7 @@ export function AvailableOrdersPage() {
 
     channel
       .on('broadcast', { event: 'order-created' }, (message) => {
+        console.log('[Realtime] order-created received', message.payload);
         const newOrder = message.payload as Order;
         setOrders((prev) => {
           if (prev.some((o) => o.id === newOrder.id)) return prev;
@@ -44,10 +38,12 @@ export function AvailableOrdersPage() {
         showToast(`New order from ${newOrder.consumer_name || 'customer'}!`, 'success');
       })
       .on('broadcast', { event: 'order-taken' }, (message) => {
+        console.log('[Realtime] order-taken received', message.payload);
         const payload = message.payload as { orderId: string };
         setOrders((prev) => prev.filter((o) => o.id !== payload.orderId));
       })
       .subscribe((status) => {
+        console.log('[Realtime] orders:global (AvailableOrdersPage) status:', status);
         setLiveStatus(status === 'SUBSCRIBED' ? 'live' : status === 'CLOSED' ? 'offline' : 'connecting');
       });
 
@@ -60,19 +56,6 @@ export function AvailableOrdersPage() {
     setAccepting(orderId);
     try {
       await axios.patch(`/api/orders/${orderId}/accept`);
-
-      const globalChannel = supabase.channel('orders:global');
-      globalChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await globalChannel.send({
-            type: 'broadcast',
-            event: 'order-taken',
-            payload: { orderId },
-          });
-          supabase.removeChannel(globalChannel);
-        }
-      });
-
       showToast('Order accepted! Redirecting to map...', 'success');
       navigate(`/deliveries/${orderId}/map`);
     } catch (err) {

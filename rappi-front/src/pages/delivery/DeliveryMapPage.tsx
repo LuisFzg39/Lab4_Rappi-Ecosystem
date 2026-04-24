@@ -1,50 +1,28 @@
 import { useEffect, useState, useRef, useCallback } from 'preact/hooks';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
-import L from 'leaflet';
 import { useAxios } from '../../providers/AxiosProvider';
 import { useToast } from '../../providers/ToastProvider';
-import useSupabase from '../../hooks/useSupabase';
+import { destinationIcon, deliveryIcon } from '../../utils/mapIcons';
 import type { Order, LatLng } from '../../types';
-import type { RealtimeChannel } from '@supabase/supabase-js';
 import 'leaflet/dist/leaflet.css';
 
 const STEP = 0.00003;
-
-const destinationIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
-
-const deliveryIcon = new L.Icon({
-  iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-blue.png',
-  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-  iconSize: [25, 41],
-  iconAnchor: [12, 41],
-});
 
 export function DeliveryMapPage() {
   const { id } = useParams<{ id: string }>();
   const axios = useAxios();
   const navigate = useNavigate();
   const { showToast } = useToast();
-  const supabase = useSupabase();
 
   const [order, setOrder] = useState<Order | null>(null);
   const [position, setPosition] = useState<LatLng>({ lat: 3.4516, lng: -76.532 });
   const [loading, setLoading] = useState(true);
   const [delivered, setDelivered] = useState(false);
-  const [channelReady, setChannelReady] = useState(false);
 
   const positionRef = useRef<LatLng>(position);
   const throttleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const channelRef = useRef<RealtimeChannel | null>(null);
-  const globalChannelRef = useRef<RealtimeChannel | null>(null);
-  const globalReadyRef = useRef(false);
   const deliveredRef = useRef(false);
-  const acceptedBroadcastSent = useRef(false);
   const initialPositionPublishedRef = useRef(false);
 
   useEffect(() => {
@@ -84,7 +62,7 @@ export function DeliveryMapPage() {
         }
 
         // Persist starting position right away so the consumer sees the driver's
-        // pin even before the first arrow key press.
+        // pin even before the first arrow key press (server will broadcast it).
         if (
           needsPublish &&
           startPos &&
@@ -102,98 +80,8 @@ export function DeliveryMapPage() {
       .finally(() => setLoading(false));
   }, [axios, id]);
 
-  // Order-scoped channel: only send after SUBSCRIBED to avoid REST fallback
-  useEffect(() => {
-    if (!id) return;
-
-    const channel = supabase.channel(`order:${id}`);
-    channelRef.current = channel;
-
-    channel
-      .on('broadcast', { event: 'request-position' }, () => {
-        const pos = positionRef.current;
-        channel.send({
-          type: 'broadcast',
-          event: 'position-update',
-          payload: { lat: pos.lat, lng: pos.lng },
-        });
-      })
-      .subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          setChannelReady(true);
-          // Announce our current position so any listening consumer sees us immediately
-          const pos = positionRef.current;
-          channel.send({
-            type: 'broadcast',
-            event: 'position-update',
-            payload: { lat: pos.lat, lng: pos.lng },
-          });
-        }
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-      channelRef.current = null;
-      setChannelReady(false);
-    };
-  }, [id, supabase]);
-
-  // Global channel for cross-page events
-  useEffect(() => {
-    const channel = supabase.channel('orders:global');
-    globalChannelRef.current = channel;
-
-    channel.subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        globalReadyRef.current = true;
-      } else {
-        globalReadyRef.current = false;
-      }
-    });
-
-    return () => {
-      supabase.removeChannel(channel);
-      globalChannelRef.current = null;
-      globalReadyRef.current = false;
-    };
-  }, [supabase]);
-
-  // Announce "order-accepted" once, after both the order is loaded and the global channel is ready
-  useEffect(() => {
-    if (!order || acceptedBroadcastSent.current) return;
-    if (order.status !== 'En entrega') return;
-
-    let cancelled = false;
-    const interval = setInterval(() => {
-      if (cancelled) return;
-      if (!globalReadyRef.current || !globalChannelRef.current) return;
-
-      acceptedBroadcastSent.current = true;
-      globalChannelRef.current.send({
-        type: 'broadcast',
-        event: 'order-accepted',
-        payload: order,
-      });
-      clearInterval(interval);
-    }, 200);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [order]);
-
   const sendPositionUpdate = useCallback(async (pos: LatLng) => {
     try {
-      const ch = channelRef.current;
-      if (ch && channelReady) {
-        await ch.send({
-          type: 'broadcast',
-          event: 'position-update',
-          payload: { lat: pos.lat, lng: pos.lng },
-        });
-      }
-
       const { data } = await axios.patch<Order>(`/api/orders/${id}/position`, {
         lat: pos.lat,
         lng: pos.lng,
@@ -204,19 +92,11 @@ export function DeliveryMapPage() {
         deliveredRef.current = true;
         setOrder(data);
         showToast('Order delivered! You arrived at the destination.', 'success');
-
-        if (globalChannelRef.current && globalReadyRef.current) {
-          await globalChannelRef.current.send({
-            type: 'broadcast',
-            event: 'order-delivered',
-            payload: data,
-          });
-        }
       }
     } catch (err) {
       console.error('[Delivery] Error sending position:', err);
     }
-  }, [axios, id, showToast, channelReady]);
+  }, [axios, id, showToast]);
 
   useEffect(() => {
     if (!order || order.status !== 'En entrega') return;
@@ -280,14 +160,9 @@ export function DeliveryMapPage() {
           </button>
           <h1 class="text-xl font-semibold text-gray-800">Delivery Map</h1>
         </div>
-        <div class="flex items-center gap-2">
-          {!channelReady && (
-            <span class="text-xs px-2 py-1 rounded-full bg-yellow-100 text-yellow-700">Connecting...</span>
-          )}
-          <span class={`text-xs px-3 py-1 rounded-full font-medium ${delivered ? 'bg-green-100 text-green-700' : 'bg-indigo-100 text-indigo-700'}`}>
-            {delivered ? 'Entregado' : 'En entrega'}
-          </span>
-        </div>
+        <span class={`text-xs px-3 py-1 rounded-full font-medium ${delivered ? 'bg-green-100 text-green-700' : 'bg-indigo-100 text-indigo-700'}`}>
+          {delivered ? 'Entregado' : 'En entrega'}
+        </span>
       </header>
 
       <main class="max-w-4xl mx-auto px-6 py-6">
