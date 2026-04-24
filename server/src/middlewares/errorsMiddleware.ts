@@ -3,14 +3,16 @@ import Boom from '@hapi/boom';
 
 export const errorsMiddleware = (
   error: Error,
-  req: Request,
+  _req: Request,
   res: Response,
-  next: NextFunction
+  _next: NextFunction
 ) => {
+  console.error('[errorsMiddleware]', error);
+
   const boomError = Boom.isBoom(error) ? error : Boom.boomify(error);
   const payload = {
     ...boomError.output.payload,
-    message: boomError.message,
+    message: boomError.message || 'Internal server error',
   };
   return res.status(boomError.output.statusCode).json(payload);
 };
